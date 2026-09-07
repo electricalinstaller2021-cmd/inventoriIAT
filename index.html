@@ -1845,7 +1845,7 @@
 
                 if (clean.items.length === 0) {
                     // Sheet masih kosong: pakai data contoh lokal lalu kirim ke Sheet
-                    generateDummyData();
+                    // generateDummyData();
                     cloudReady = true;
                     setCloudStatus('ok', 'Sheet kosong — mengunggah data awal');
                     showToast('Google Sheet masih kosong. Data awal diunggah ke Sheet.', 'warn');
@@ -1866,7 +1866,7 @@
                 cloudReady = false;
                 setCloudStatus('error', 'Gagal terhubung — data lokal');
                 showToast('Gagal memuat data dari Google Sheet. Sistem memakai data lokal sementara.', 'error');
-                if (items.length === 0) generateDummyData();
+               // if (items.length === 0) generateDummyData();
                 refreshAllUI();
             }
         }
