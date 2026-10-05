@@ -1770,16 +1770,21 @@
             const usedKode = () => new Set([...out.values()].map(i => i.kode));
             // barang dihapus lokal
             base.items.forEach(b => { if (!localMap.has(b.id)) out.delete(b.id); });
+            lastRemap = [];
             items.forEach(loc => {
                 const b = baseMap.get(loc.id);
                 if (!b) { // barang baru
                     const n = clone(loc);
+                    // sudah masuk dari percobaan simpan sebelumnya? jangan dobel
+                    const same = [...out.values()].find(r => r.tipe === n.tipe && r.maker === n.maker && (r.id === n.id || r.kode === n.kode));
+                    if (same) { lastRemap.push({ oldId: loc.id, newId: same.id, kode: same.kode }); return; }
                     if (out.has(n.id)) n.id = Math.max(0, ...[...out.keys()].map(Number)) + 1;
                     const kodes = usedKode();
                     if (kodes.has(n.kode)) {
                         const m = String(n.kode).match(/^(.*-)(\d+)$/);
                         if (m) { let k = parseInt(m[2], 10); let c; do { k++; c = m[1] + String(k).padStart(m[2].length, '0'); } while (kodes.has(c)); n.kode = c; }
                     }
+                    if (n.id !== loc.id || n.kode !== loc.kode) lastRemap.push({ oldId: loc.id, newId: n.id, kode: n.kode });
                     out.set(n.id, n); return;
                 }
                 const r = out.get(loc.id);
@@ -1851,34 +1856,97 @@
             }
         }
 
+        // ===== Antrian simpan: kirim -> cek ulang -> kirim lagi jika tertimpa =====
+        let lastRemap = [];
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+        const msVal = (it, k) => Number(it?.machineStocks?.[k]) || 0;
+
+        // Apakah perubahan kita masih ada di Sheet? (false = tertimpa user lain)
+        function verifySaved(latest, before, merged) {
+            const latestH = new Set(latest.history.map(recKey));
+            const beforeH = new Set(before.history.map(recKey));
+            for (const h of merged.history) { const k = recKey(h); if (!beforeH.has(k) && !latestH.has(k)) return false; }
+            const bk = (r) => r.id != null ? 'id:' + r.id : recKey(r);
+            const latestB = new Set(latest.borrowedRecords.map(bk));
+            const beforeB = new Set(before.borrowedRecords.map(bk));
+            for (const r of merged.borrowedRecords) { const k = bk(r); if (!beforeB.has(k) && !latestB.has(k)) return false; }
+            const beforeMap = new Map(before.items.map(i => [i.id, i]));
+            const latestMap = new Map(latest.items.map(i => [i.id, i]));
+            const latestKode = new Set(latest.items.map(i => i.kode));
+            const mergedIds = new Set(merged.items.map(i => i.id));
+            for (const m of merged.items) {
+                const b = beforeMap.get(m.id);
+                if (!b) { if (!latestKode.has(m.kode)) return false; continue; }
+                const l = latestMap.get(m.id);
+                if (!l) continue; // dihapus user lain setelahnya
+                for (const f of Object.keys(m)) {
+                    if (f === 'id' || f === 'machineStocks') continue;
+                    const mv = JSON.stringify(m[f]), bv = JSON.stringify(b[f]);
+                    if (mv !== bv && JSON.stringify(l[f]) === bv) return false;
+                }
+                const keys = new Set([...Object.keys(m.machineStocks || {}), ...Object.keys(b.machineStocks || {})]);
+                for (const k of keys) {
+                    if (msVal(m, k) !== msVal(b, k) && msVal(l, k) === msVal(b, k)) return false;
+                }
+            }
+            for (const b of before.items) { if (!mergedIds.has(b.id) && latestMap.has(b.id)) return false; }
+            return true;
+        }
+
         async function syncToCloud(manual = false) {
             if (isSyncing) { syncAgain = true; return; }
             if (!localDirty && !manual) return;
             isSyncing = true;
-            setCloudStatus('saving', 'Menyimpan...');
+            const MAX_TRY = 6;
+            let saved = false;
             try {
-                const remote = await fetchCloud();
-                const merged = mergeData(remote);
-                localDirty = false;
-                const res = await fetch(API_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                    body: JSON.stringify({ action: 'saveData', ...merged })
-                });
-                if (!res.ok) throw new Error('HTTP ' + res.status);
-                cloudReady = true;
-                if (!syncAgain) applyData(merged); else baseSnapshot = clone(merged);
+                // jeda acak kecil agar 2 perangkat yang menekan bersamaan tidak persis berbarengan
+                await sleep(Math.random() * 1200);
+                for (let attempt = 1; attempt <= MAX_TRY && !saved; attempt++) {
+                    setCloudStatus('saving', attempt === 1 ? 'Menyimpan...' : `Antri simpan (${attempt}/${MAX_TRY})...`);
+                    const before = await fetchCloud();
+                    const merged = mergeData(before);
+                    const remap = lastRemap.slice();
+                    const res = await fetch(API_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                        body: JSON.stringify({ action: 'saveData', ...merged })
+                    });
+                    if (!res.ok) throw new Error('HTTP ' + res.status);
+                    // cek ulang 2x: memastikan simpanan perangkat lain tidak menimpa data kita
+                    setCloudStatus('saving', 'Memeriksa simpanan...');
+                    await sleep(2500 + Math.random() * 1500);
+                    let latest = await fetchCloud();
+                    let ok = verifySaved(latest, before, merged);
+                    if (ok) {
+                        await sleep(4000 + Math.random() * 2000);
+                        latest = await fetchCloud();
+                        ok = verifySaved(latest, before, merged);
+                    }
+                    if (!ok) {
+                        console.warn(`Simpanan tertimpa perangkat lain, kirim ulang (percobaan ${attempt})`);
+                        await sleep(800 + Math.random() * 2000 * attempt);
+                        continue; // baseSnapshot & data lokal belum diubah -> digabung ulang ke data terbaru
+                    }
+                    saved = true;
+                    // samakan ID/kode barang baru lokal dengan yang tersimpan
+                    remap.forEach(m => { const it = items.find(i => i.id === m.oldId); if (it) { it.id = m.newId; it.kode = m.kode; } });
+                    cloudReady = true;
+                    if (!syncAgain) { localDirty = false; applyData(latest); }
+                    else baseSnapshot = clone(merged);
+                }
+                if (!saved) throw new Error('Simpanan terus tertimpa perangkat lain');
                 setCloudStatus('ok', 'Tersimpan ' + new Date().toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'}));
                 if (manual) showToast('Semua data berhasil disinkronkan ke Google Sheet.', 'success');
             } catch (err) {
                 console.error('Gagal sinkron ke Sheet:', err);
                 localDirty = true;
                 setCloudStatus('error', 'Gagal menyimpan');
-                showToast('Gagal menyimpan ke Google Sheet. Perubahan akan dicoba lagi.', 'error');
-                clearTimeout(syncTimer); syncTimer = setTimeout(() => syncToCloud(false), 15000);
+                showToast('Gagal menyimpan ke Google Sheet. Perubahan akan dicoba lagi otomatis.', 'error');
+                clearTimeout(syncTimer); syncTimer = setTimeout(() => syncToCloud(false), 10000 + Math.random() * 5000);
             } finally {
                 isSyncing = false;
-                if (syncAgain) { syncAgain = false; scheduleSync(); }
+                if (syncAgain) { syncAgain = false; localDirty = true; scheduleSync(); }
             }
         }
 
