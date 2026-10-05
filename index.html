@@ -497,7 +497,7 @@
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
                         <div>
                             <label class="block text-sm font-semibold text-slate-700 mb-1">Kode Part <span class="text-red-500">*</span></label>
-                            <input type="text" id="inputKode" required class="w-full bg-slate-50 border border-slate-200 text-slate-800 text-sm rounded-lg focus:ring-2 focus:ring-blue-500 p-2.5 outline-none font-mono uppercase" placeholder="Contoh: SP-E-001">
+                            <input type="text" id="inputKode" required class="w-full bg-slate-50 border border-slate-200 text-slate-800 text-sm rounded-lg focus:ring-2 focus:ring-blue-500 p-2.5 outline-none font-mono uppercase bg-slate-100" readonly placeholder="Otomatis dari Jenis Barang"><p class="text-[11px] text-slate-400 mt-1">ID dibuat otomatis: SP-[inisial jenis]-[nomor]</p>
                         </div>
                         <div>
                             <label class="block text-sm font-semibold text-slate-700 mb-1">Maker / Merk <span class="text-red-500">*</span></label>
@@ -1135,6 +1135,17 @@
             });
         }
 
+        function generateKode(jenis){
+            const w=(jenis||'').trim().split(/\s+/).filter(Boolean);
+            let pre=w.length>1?w.map(x=>x[0]).join(''):(w[0]||'X').slice(0,3);
+            pre=pre.replace(/[^A-Za-z0-9]/g,'').toUpperCase().slice(0,4)||'X';
+            const base='SP-'+pre+'-';let max=0;
+            items.forEach(i=>{const k=(i.kode||'').toUpperCase();if(k.startsWith(base)){const n=parseInt(k.slice(base.length));if(n>max)max=n;}});
+            return base+String(max+1).padStart(3,'0');
+        }
+        function autoKode(){ if(document.getElementById('editingItemId').value) return; document.getElementById('inputKode').value=generateKode(document.getElementById('inputJenis').value); }
+        document.addEventListener('DOMContentLoaded',()=>{const j=document.getElementById('inputJenis');if(j){j.addEventListener('input',autoKode);j.addEventListener('change',autoKode);}});
+
         function openModal() {
             document.getElementById('modalTitleText').innerText = "Tambah Item Baru";
             document.getElementById('modalTitleIcon').className = "fa-solid fa-square-plus text-blue-600";
@@ -1142,7 +1153,7 @@
             document.getElementById('editingItemId').value = "";
             document.getElementById('stokAwalContainer').classList.remove('hidden'); document.getElementById('inputStok').setAttribute('required', 'true');
             document.getElementById('mesinContainer').classList.remove('hidden'); document.getElementById('editNoticeContainer').classList.add('hidden');
-            document.getElementById('addItemForm').reset(); document.getElementById('addModal').classList.remove('hidden');
+            document.getElementById('addItemForm').reset(); autoKode(); document.getElementById('addModal').classList.remove('hidden');
         }
 
         function closeModal() {
@@ -1156,6 +1167,7 @@
             if(!form.checkValidity()) { form.reportValidity(); return; }
 
             const editId = document.getElementById('editingItemId').value;
+            if(!editId) autoKode();
             const kode = document.getElementById('inputKode').value.toUpperCase();
             const maker = document.getElementById('inputMaker').value;
             const tipe = document.getElementById('inputTipe').value;
