@@ -1739,63 +1739,146 @@
             };
         }
 
-        async function loadFromCloud(manual = false) {
-            setCloudStatus('loading', 'Memuat data...');
-                        try {
-                const res = await fetch(`${API_URL}?action=getData&t=${Date.now()}`);
-                if (!res.ok) throw new Error('HTTP ' + res.status);
-                const raw = await res.json();
-                const payload = raw && raw.data ? raw.data : raw;
-                const clean = normalizeCloudData(payload || {});
+        // ===== Sinkron aman multi-user =====
+        let baseSnapshot = null;      // data terakhir yang sama dengan Sheet
+        let localDirty = false;       // ada perubahan lokal yang belum tersimpan
+        let syncAgain = false;        // ada perubahan baru saat sedang menyimpan
+        let suppressSync = false;     // jangan simpan saat UI diperbarui karena memuat data
+        const clone = (v) => JSON.parse(JSON.stringify(v));
+        const recKey = (r) => JSON.stringify(r);
 
+        async function fetchCloud() {
+            const res = await fetch(`${API_URL}?action=getData&t=${Date.now()}`);
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const raw = await res.json();
+            return normalizeCloudData((raw && raw.data ? raw.data : raw) || {});
+        }
+
+        function applyData(d) {
+            items = d.items; history = d.history; borrowedRecords = d.borrowedRecords;
+            baseSnapshot = clone(d);
+            suppressSync = true;
+            try { refreshAllUI(); } finally { suppressSync = false; }
+        }
+
+        // Gabungkan perubahan lokal (dibanding baseSnapshot) ke data terbaru di Sheet
+        function mergeData(remote) {
+            const base = baseSnapshot || { items: [], history: [], borrowedRecords: [] };
+            const baseMap = new Map(base.items.map(i => [i.id, i]));
+            const localMap = new Map(items.map(i => [i.id, i]));
+            const out = new Map(remote.items.map(i => [i.id, clone(i)]));
+            const usedKode = () => new Set([...out.values()].map(i => i.kode));
+            // barang dihapus lokal
+            base.items.forEach(b => { if (!localMap.has(b.id)) out.delete(b.id); });
+            items.forEach(loc => {
+                const b = baseMap.get(loc.id);
+                if (!b) { // barang baru
+                    const n = clone(loc);
+                    if (out.has(n.id)) n.id = Math.max(0, ...[...out.keys()].map(Number)) + 1;
+                    const kodes = usedKode();
+                    if (kodes.has(n.kode)) {
+                        const m = String(n.kode).match(/^(.*-)(\d+)$/);
+                        if (m) { let k = parseInt(m[2], 10); let c; do { k++; c = m[1] + String(k).padStart(m[2].length, '0'); } while (kodes.has(c)); n.kode = c; }
+                    }
+                    out.set(n.id, n); return;
+                }
+                const r = out.get(loc.id);
+                if (!r) return; // sudah dihapus user lain
+                Object.keys(loc).forEach(f => {
+                    if (f === 'machineStocks' || f === 'id') return;
+                    if (JSON.stringify(loc[f]) !== JSON.stringify(b[f])) r[f] = clone(loc[f]);
+                });
+                const ms = { ...(r.machineStocks || {}) };
+                const keys = new Set([...Object.keys(loc.machineStocks || {}), ...Object.keys(b.machineStocks || {})]);
+                keys.forEach(k => {
+                    const delta = (Number(loc.machineStocks?.[k]) || 0) - (Number(b.machineStocks?.[k]) || 0);
+                    if (delta !== 0) ms[k] = Math.max(0, (Number(ms[k]) || 0) + delta);
+                    if (!(k in (loc.machineStocks || {})) && (k in (b.machineStocks || {}))) delete ms[k];
+                });
+                r.machineStocks = ms;
+            });
+            const mergeList = (remoteL, baseL, localL, keyFn) => {
+                const baseK = new Set(baseL.map(keyFn)), localK = new Set(localL.map(keyFn));
+                const kept = remoteL.filter(x => !(baseK.has(keyFn(x)) && !localK.has(keyFn(x))));
+                const have = new Set(kept.map(keyFn));
+                const added = localL.filter(x => !baseK.has(keyFn(x)) && !have.has(keyFn(x)));
+                return [...added, ...kept];
+            };
+            const bKey = (r) => r.id != null ? 'id:' + r.id : recKey(r);
+            // peminjaman: catatan yang diubah lokal menggantikan versi Sheet
+            const baseB = new Map(base.borrowedRecords.map(r => [bKey(r), recKey(r)]));
+            let borrowed = mergeList(remote.borrowedRecords, base.borrowedRecords, borrowedRecords, bKey);
+            const localB = new Map(borrowedRecords.map(r => [bKey(r), r]));
+            borrowed = borrowed.map(r => { const l = localB.get(bKey(r)); return (l && baseB.has(bKey(r)) && recKey(l) !== baseB.get(bKey(r))) ? l : r; });
+            return {
+                items: [...out.values()],
+                history: mergeList(remote.history, base.history, history, recKey),
+                borrowedRecords: borrowed
+            };
+        }
+
+        async function loadFromCloud(manual = false) {
+            if (isSyncing || (localDirty && !manual)) return;
+            if (manual && localDirty) { await syncToCloud(true); return; }
+            if (manual || !baseSnapshot) setCloudStatus('loading', 'Memuat data...');
+            try {
+                const clean = await fetchCloud();
                 if (clean.items.length === 0) {
-                    // Sheet masih kosong: pakai data contoh lokal lalu kirim ke Sheet
-                    generateDummyData();
-                    cloudReady = true;
-                    setCloudStatus('ok', 'Sheet kosong — mengunggah data awal');
-                    showToast('Google Sheet masih kosong. Data awal diunggah ke Sheet.', 'warn');
-                    refreshAllUI();
-                    syncToCloud(false);
+                    if (items.length === 0) generateDummyData();
+                    cloudReady = false;
+                    setCloudStatus('error', 'Sheet kosong');
+                    suppressSync = true; try { refreshAllUI(); } finally { suppressSync = false; }
+                    if (confirm('Google Sheet terbaca kosong. Unggah data yang tampil sekarang ke Sheet?\n(Pilih Batal jika Sheet seharusnya berisi data.)')) {
+                        baseSnapshot = { items: [], history: [], borrowedRecords: [] };
+                        cloudReady = true; localDirty = true; syncToCloud(true);
+                    }
                     return;
                 }
-
-                items = clean.items;
-                history = clean.history;
-                borrowedRecords = clean.borrowedRecords;
+                if (localDirty || isSyncing) return; // ada perubahan baru saat memuat
+                applyData(clean);
                 cloudReady = true;
                 setCloudStatus('ok', `${items.length} data dimuat`);
                 if (manual) showToast(`Data dimuat dari Google Sheet (${items.length} barang).`, 'success');
-                refreshAllUI();
             } catch (err) {
                 console.error('Gagal memuat dari Sheet:', err);
-                cloudReady = false;
-                setCloudStatus('error', 'Gagal terhubung — data lokal');
-                showToast('Gagal memuat data dari Google Sheet. Sistem memakai data lokal sementara.', 'error');
-                if (items.length === 0) generateDummyData();
-                refreshAllUI();
+                if (!baseSnapshot) {
+                    cloudReady = false;
+                    setCloudStatus('error', 'Gagal terhubung — data lokal');
+                    showToast('Gagal memuat data dari Google Sheet. Sistem memakai data lokal sementara.', 'error');
+                    if (items.length === 0) generateDummyData();
+                    suppressSync = true; try { refreshAllUI(); } finally { suppressSync = false; }
+                }
             }
         }
 
         async function syncToCloud(manual = false) {
-            if (isSyncing) return;
+            if (isSyncing) { syncAgain = true; return; }
+            if (!localDirty && !manual) return;
             isSyncing = true;
             setCloudStatus('saving', 'Menyimpan...');
             try {
+                const remote = await fetchCloud();
+                const merged = mergeData(remote);
+                localDirty = false;
                 const res = await fetch(API_URL, {
                     method: 'POST',
                     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                    body: JSON.stringify({ action: 'saveData', items, history, borrowedRecords })
+                    body: JSON.stringify({ action: 'saveData', ...merged })
                 });
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 cloudReady = true;
+                if (!syncAgain) applyData(merged); else baseSnapshot = clone(merged);
                 setCloudStatus('ok', 'Tersimpan ' + new Date().toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'}));
                 if (manual) showToast('Semua data berhasil disinkronkan ke Google Sheet.', 'success');
             } catch (err) {
                 console.error('Gagal sinkron ke Sheet:', err);
+                localDirty = true;
                 setCloudStatus('error', 'Gagal menyimpan');
-                showToast('Gagal menyimpan ke Google Sheet. Perubahan hanya tersimpan di browser.', 'error');
+                showToast('Gagal menyimpan ke Google Sheet. Perubahan akan dicoba lagi.', 'error');
+                clearTimeout(syncTimer); syncTimer = setTimeout(() => syncToCloud(false), 15000);
             } finally {
                 isSyncing = false;
+                if (syncAgain) { syncAgain = false; scheduleSync(); }
             }
         }
 
@@ -1810,12 +1893,20 @@
             triggerUIUpdate();
         }
 
-        // Setiap perubahan data lokal otomatis dikirim ke Google Sheet
+        // Hanya perubahan dari user yang dikirim ke Google Sheet
         const _origTriggerUIUpdate = triggerUIUpdate;
         triggerUIUpdate = function() {
             _origTriggerUIUpdate.apply(this, arguments);
-            if (cloudReady) scheduleSync();
+            if (cloudReady && !suppressSync) {
+                localDirty = true;
+                if (isSyncing) syncAgain = true; else scheduleSync();
+            }
         };
+
+        // Muat ulang otomatis agar data user lain ikut tampil
+        setInterval(() => { if (document.visibilityState === 'visible') loadFromCloud(false); }, 30000);
+        document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') loadFromCloud(false); });
+        window.addEventListener('beforeunload', (e) => { if (localDirty || isSyncing) { e.preventDefault(); e.returnValue = ''; } });
 
         // --- Init ---
         window.onload = function() {
