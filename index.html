@@ -1754,6 +1754,14 @@
             return normalizeCloudData((raw && raw.data ? raw.data : raw) || {});
         }
 
+        // ===== Data tertunda disimpan di perangkat (localStorage) =====
+        const PENDING_KEY = 'inv_pending_v1';
+        function savePendingLocal() {
+            try { localStorage.setItem(PENDING_KEY, JSON.stringify({ items, history, borrowedRecords, base: baseSnapshot, t: Date.now() })); } catch (e) {}
+        }
+        function clearPendingLocal() { try { localStorage.removeItem(PENDING_KEY); } catch (e) {} }
+        function readPendingLocal() { try { return JSON.parse(localStorage.getItem(PENDING_KEY) || 'null'); } catch (e) { return null; } }
+
         function applyData(d) {
             items = d.items; history = d.history; borrowedRecords = d.borrowedRecords;
             baseSnapshot = clone(d);
@@ -1840,6 +1848,18 @@
                     return;
                 }
                 if (localDirty || isSyncing) return; // ada perubahan baru saat memuat
+                const pend = !baseSnapshot ? readPendingLocal() : null;
+                if (pend && pend.base) {
+                    // ada data lokal yang belum masuk Sheet dari sesi sebelumnya -> kirim otomatis
+                    baseSnapshot = normalizeCloudData(pend.base);
+                    const loc = normalizeCloudData(pend);
+                    items = loc.items; history = loc.history; borrowedRecords = loc.borrowedRecords;
+                    suppressSync = true; try { refreshAllUI(); } finally { suppressSync = false; }
+                    cloudReady = true; localDirty = true;
+                    setCloudStatus('saving', 'Mengirim data lokal tertunda...');
+                    syncToCloud(false);
+                    return;
+                }
                 applyData(clean);
                 cloudReady = true;
                 setCloudStatus('ok', `${items.length} data dimuat`);
@@ -1898,13 +1918,24 @@
             if (!localDirty && !manual) return;
             isSyncing = true;
             const MAX_TRY = 6;
+            savePendingLocal();
             let saved = false;
             try {
                 // jeda acak kecil agar 2 perangkat yang menekan bersamaan tidak persis berbarengan
                 await sleep(Math.random() * 1200);
                 for (let attempt = 1; attempt <= MAX_TRY && !saved; attempt++) {
                     setCloudStatus('saving', attempt === 1 ? 'Menyimpan...' : `Antri simpan (${attempt}/${MAX_TRY})...`);
-                    const before = await fetchCloud();
+                    // TAHAN: cek apakah perangkat lain sedang menyimpan (Sheet berubah dalam beberapa detik)
+                    let before = await fetchCloud();
+                    for (let hold = 0; hold < 10; hold++) {
+                        await sleep(1500 + Math.random() * 1000);
+                        const again = await fetchCloud();
+                        if (JSON.stringify(again) === JSON.stringify(before)) break;
+                        before = again;
+                        setCloudStatus('saving', 'Menunggu perangkat lain selesai menyimpan...');
+                        await sleep(2000 + Math.random() * 2000);
+                    }
+                    setCloudStatus('saving', attempt === 1 ? 'Menyimpan...' : `Antri simpan (${attempt}/${MAX_TRY})...`);
                     const merged = mergeData(before);
                     const remap = lastRemap.slice();
                     const res = await fetch(API_URL, {
@@ -1932,8 +1963,8 @@
                     // samakan ID/kode barang baru lokal dengan yang tersimpan
                     remap.forEach(m => { const it = items.find(i => i.id === m.oldId); if (it) { it.id = m.newId; it.kode = m.kode; } });
                     cloudReady = true;
-                    if (!syncAgain) { localDirty = false; applyData(latest); }
-                    else baseSnapshot = clone(merged);
+                    if (!syncAgain) { localDirty = false; applyData(latest); clearPendingLocal(); }
+                    else { baseSnapshot = clone(merged); savePendingLocal(); }
                 }
                 if (!saved) throw new Error('Simpanan terus tertimpa perangkat lain');
                 setCloudStatus('ok', 'Tersimpan ' + new Date().toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'}));
@@ -1941,8 +1972,9 @@
             } catch (err) {
                 console.error('Gagal sinkron ke Sheet:', err);
                 localDirty = true;
-                setCloudStatus('error', 'Gagal menyimpan');
-                showToast('Gagal menyimpan ke Google Sheet. Perubahan akan dicoba lagi otomatis.', 'error');
+                savePendingLocal();
+                setCloudStatus('error', 'Tersimpan di perangkat, menunggu antrian');
+                showToast('Data disimpan sementara di perangkat ini dan akan otomatis dikirim ke Google Sheet.', 'info');
                 clearTimeout(syncTimer); syncTimer = setTimeout(() => syncToCloud(false), 10000 + Math.random() * 5000);
             } finally {
                 isSyncing = false;
@@ -1967,13 +1999,14 @@
             _origTriggerUIUpdate.apply(this, arguments);
             if (cloudReady && !suppressSync) {
                 localDirty = true;
+                savePendingLocal();
                 if (isSyncing) syncAgain = true; else scheduleSync();
             }
         };
 
         // Muat ulang otomatis agar data user lain ikut tampil
-        setInterval(() => { if (document.visibilityState === 'visible') loadFromCloud(false); }, 30000);
-        document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') loadFromCloud(false); });
+        // Data hanya dimuat dari Sheet saat web pertama dibuka (atau tombol muat ulang)
+        window.addEventListener('online', () => { if (localDirty && !isSyncing) scheduleSync(); });
         window.addEventListener('beforeunload', (e) => { if (localDirty || isSyncing) { e.preventDefault(); e.returnValue = ''; } });
 
         // --- Init ---
