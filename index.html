@@ -798,7 +798,13 @@
                 confirmIconWrapper.className = "w-16 h-16 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-4";
             }
 
-            newBtn.addEventListener('click', () => { closeCustomConfirm(); if(confirmCallback) confirmCallback(); });
+            newBtn.addEventListener('click', () => {
+                // Simpan callback sebelum modal ditutup, karena closeCustomConfirm()
+                // mengosongkan confirmCallback.
+                const action = confirmCallback;
+                closeCustomConfirm();
+                if (typeof action === 'function') action();
+            });
             
             const modal = document.getElementById('customConfirmModal');
             const content = document.getElementById('confirmModalContent');
