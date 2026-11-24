@@ -320,6 +320,7 @@
                                         <th class="px-4 py-3 font-bold bg-slate-50 whitespace-nowrap">Kebutuhan / Area</th>
                                         <th class="px-4 py-3 font-bold text-center bg-slate-50 whitespace-nowrap">Rak</th>
                                         <th class="px-4 py-3 font-bold text-center bg-slate-50 whitespace-nowrap">Stok</th>
+                                        <th class="px-4 py-3 font-bold text-center bg-slate-50 whitespace-nowrap">Tanggal Datang</th>
                                         <th class="px-4 py-3 font-bold text-center w-36 bg-slate-50 whitespace-nowrap">Aksi</th>
                                     </tr>
                                 </thead>
@@ -518,6 +519,11 @@
                             <input type="number" id="inputStok" required min="0" class="w-full bg-slate-50 border border-slate-200 text-slate-800 text-sm rounded-lg focus:ring-2 focus:ring-blue-500 p-2.5 outline-none" placeholder="0">
                         </div>
                         <div>
+                            <label class="block text-sm font-semibold text-slate-700 mb-1">Tanggal Barang Datang</label>
+                            <input type="date" id="inputTanggalDatang" class="w-full bg-slate-50 border border-slate-200 text-slate-800 text-sm rounded-lg focus:ring-2 focus:ring-blue-500 p-2.5 outline-none">
+                            <p class="mt-1 text-xs text-slate-400">Kosongkan untuk menggunakan tanggal hari ini.</p>
+                        </div>
+                        <div>
                             <label class="block text-sm font-semibold text-slate-700 mb-1">Min. Stok (Kritis) <span class="text-red-500">*</span></label>
                             <input type="number" id="inputMinStok" required min="1" class="w-full bg-slate-50 border border-slate-200 text-slate-800 text-sm rounded-lg focus:ring-2 focus:ring-blue-500 p-2.5 outline-none" placeholder="Misal: 2">
                         </div>
@@ -624,6 +630,11 @@
                                 </div>
                             </div>
                         </div>
+                    </div>
+                    <div id="transArrivalDateWrapper" class="hidden">
+                        <label class="block text-sm font-semibold text-slate-700 mb-1">Tanggal Barang Datang <span class="text-red-500">*</span></label>
+                        <input type="date" id="transArrivalDate" class="w-full bg-slate-50 border border-slate-200 text-slate-800 text-sm rounded-lg focus:ring-2 focus:border-blue-500 p-2.5 outline-none">
+                        <p class="text-xs text-slate-500 mt-1">Isi tanggal barang benar-benar diterima. Jika dikosongkan, otomatis menggunakan tanggal hari ini.</p>
                     </div>
                     <div>
                         <label class="block text-sm font-semibold text-slate-700 mb-1">Jumlah <span class="text-red-500">*</span></label>
@@ -1081,6 +1092,7 @@
                                     <span class="text-[9px] text-slate-400 mt-0.5 whitespace-nowrap">Min: ${item.minStok}</span>
                                 </div>
                             </td>
+                            <td class="px-4 py-3 text-center whitespace-nowrap text-xs font-medium text-slate-600">${item.tanggalDatang || '-'}</td>
                             <td class="px-4 py-3 whitespace-nowrap text-center">
                                 <div class="flex items-center justify-center gap-1">
                                     <button onclick="openTransModal(${item.id}, 'in')" class="w-7 h-7 rounded bg-emerald-50 text-emerald-600 hover:bg-emerald-500 hover:text-white border border-emerald-200 transition-colors flex items-center justify-center" title="Barang Masuk"><i class="fa-solid fa-plus text-[10px]"></i></button>
@@ -1122,6 +1134,7 @@
             document.getElementById('inputJenis').value = item.jenis;
             document.getElementById('inputMinStok').value = item.minStok;
             document.getElementById('inputRak').value = item.rak;
+            document.getElementById('inputTanggalDatang').value = item.tanggalDatang || new Date().toISOString().slice(0,10);
 
             document.getElementById('stokAwalContainer').classList.add('hidden'); document.getElementById('inputStok').removeAttribute('required');
             document.getElementById('mesinContainer').classList.add('hidden'); document.getElementById('editNoticeContainer').classList.remove('hidden');
@@ -1174,12 +1187,14 @@
             const jenis = document.getElementById('inputJenis').value;
             const minStok = parseInt(document.getElementById('inputMinStok').value);
             const rak = document.getElementById('inputRak').value.toUpperCase();
+            const tanggalDatang = document.getElementById('inputTanggalDatang').value || new Date().toISOString().slice(0,10);
 
             if (editId) {
                 const itemIndex = items.findIndex(i => i.id == editId);
                 if(itemIndex > -1) {
                     items[itemIndex].kode = kode; items[itemIndex].maker = maker; items[itemIndex].tipe = tipe;
                     items[itemIndex].jenis = jenis; items[itemIndex].minStok = minStok; items[itemIndex].rak = rak;
+                    items[itemIndex].tanggalDatang = tanggalDatang;
                 }
             } else {
                 const stok = parseInt(document.getElementById('inputStok').value);
@@ -1191,7 +1206,7 @@
                     if (mesinArray.length > 0) { mStocks[mesinArray[0]] = stok; for(let i=1; i<mesinArray.length; i++) mStocks[mesinArray[i]] = 0; }
                 } else { mStocks["Gudang Umum"] = stok; mesinArray = ["Gudang Umum"]; }
 
-                const newItem = { id: Date.now(), kode, maker, tipe, jenis, mesinArea: mesinArray, rak, minStok, machineStocks: mStocks };
+                const newItem = { id: Date.now(), kode, maker, tipe, jenis, mesinArea: mesinArray, rak, minStok, tanggalDatang, machineStocks: mStocks };
                 items.unshift(newItem); 
                 addToHistory('in', newItem, stok, mesinArray[0] || "Gudang Umum", "Admin Sistem", "Stok Awal Sistem");
             }
@@ -1242,6 +1257,10 @@
             const header = document.getElementById('transModalHeader'); const title = document.getElementById('transTitle'); const btnSubmit = document.getElementById('btnSubmitTrans'); const lblMachine = document.getElementById('transMachineLabel');
             const selectorWrapper = document.getElementById('globalItemSelectorWrapper'); const staticWrapper = document.getElementById('staticItemInfoWrapper');
             document.getElementById('pinjamFields').classList.add('hidden');
+            const arrivalDateWrapper = document.getElementById('transArrivalDateWrapper');
+            const arrivalDateInput = document.getElementById('transArrivalDate');
+            arrivalDateWrapper.classList.toggle('hidden', type !== 'in');
+            arrivalDateInput.value = new Date().toISOString().slice(0, 10);
 
             if(type === 'in') {
                 header.className = "px-6 py-4 border-b border-slate-200 flex justify-between items-center rounded-t-2xl bg-emerald-600 shrink-0";
@@ -1299,6 +1318,7 @@
         function submitTransaction() {
             if (transItemId === null) { showCustomAlert("Harap pilih barang terlebih dahulu!"); return; }
             const qty = parseInt(document.getElementById('transQty').value); const pic = document.getElementById('transPic').value.trim(); const ket = document.getElementById('transKet').value.trim();
+            const arrivalDate = document.getElementById('transArrivalDate').value || new Date().toISOString().slice(0, 10);
             const selectValue = document.getElementById('transMachineSelect').value; const manualValue = document.getElementById('transMachineManual').value;
             const item = items.find(i => i.id === transItemId);
 
@@ -1334,7 +1354,8 @@
                     let keyToIncrease = finalMachine === 'Supplier Baru' ? (item.mesinArea[0] || 'Gudang Umum') : finalMachine;
                     if (item.machineStocks[keyToIncrease] !== undefined) item.machineStocks[keyToIncrease] += qty; else item.machineStocks[keyToIncrease] = qty;
                 }
-                addToHistory(transType, item, qty, finalMachine, pic, ket);
+                if (transType === 'in') item.tanggalDatang = arrivalDate;
+                addToHistory(transType, item, qty, finalMachine, pic, ket, null, null, transType === 'in' ? arrivalDate : null);
             }
 
             closeTransModal(); triggerUIUpdate();
@@ -1422,9 +1443,9 @@
         }
 
         // --- STREAMING_CHUNK:History logs logic... ---
-        function addToHistory(type, item, qty, mesin, pic, ket, rawSource = null, rawDest = null) {
+        function addToHistory(type, item, qty, mesin, pic, ket, rawSource = null, rawDest = null, transactionDate = null) {
             const now = new Date();
-            const dateStr = now.toISOString().split('T')[0];
+            const dateStr = transactionDate || now.toISOString().split('T')[0];
             const displayTime = now.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }) + ' ' + now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
             history.unshift({ type, kode: item.kode, maker: item.maker, tipe: item.tipe, qty, mesin, pic, ket, dateStr, time: displayTime, rawSource, rawDest });
             updateHistoryMachineDropdown();
@@ -1537,7 +1558,7 @@
                     <p style="color:#666; font-size:12px;">Ditarik pada: ${new Date().toLocaleString('id-ID')}<br>${metaHeader.replace(/\n/g, '<br>')}</p>
                     <table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif;">
                         <thead><tr style="background-color: #0F172A; color: #ffffff; font-weight: bold; text-align: left;">
-                            <th>No</th><th>Kode Part</th><th>Maker / Merk</th><th>Tipe Barang</th><th>Kategori</th><th>Posisi Rak</th><th>Min Stok</th><th>Stok Aktual</th><th>Status Stok</th><th>Area Mesin / Alokasi</th>
+                            <th>No</th><th>Kode Part</th><th>Maker / Merk</th><th>Tipe Barang</th><th>Kategori</th><th>Posisi Rak</th><th>Tanggal Datang</th><th>Min Stok</th><th>Stok Aktual</th><th>Status Stok</th><th>Area Mesin / Alokasi</th>
                         </tr></thead><tbody>`;
 
             dataToExport.forEach((item, index) => {
@@ -1546,7 +1567,7 @@
                 if (stokTampil === 0) { statusText = "KOSONG"; statusColor = "#dc2626"; } else if (stokTampil <= item.minStok) { statusText = "KRITIS"; statusColor = "#d97706"; } else { statusText = "AMAN"; statusColor = "#16a34a"; }
                 let mesinExport = (currentFilterType === 'mesinArea' && currentFilterValue !== 'all') ? currentFilterValue : item.mesinArea.join(' | ');
 
-                tableHTML += `<tr><td align="center">${index+1}</td><td style="mso-number-format:'\@';">${item.kode}</td><td>${item.maker}</td><td>${item.tipe}</td><td>${item.jenis}</td><td align="center">${item.rak || '-'}</td><td align="center">${item.minStok}</td><td align="center" style="font-weight:bold;">${stokTampil}</td><td align="center" style="color: ${statusColor}; font-weight: bold;">${statusText}</td><td>${mesinExport}</td></tr>`;
+                tableHTML += `<tr><td align="center">${index+1}</td><td style="mso-number-format:'\@';">${item.kode}</td><td>${item.maker}</td><td>${item.tipe}</td><td>${item.jenis}</td><td align="center">${item.rak || '-'}</td><td align="center">${item.tanggalDatang || '-'}</td><td align="center">${item.minStok}</td><td align="center" style="font-weight:bold;">${stokTampil}</td><td align="center" style="color: ${statusColor}; font-weight: bold;">${statusText}</td><td>${mesinExport}</td></tr>`;
             });
 
             tableHTML += `</tbody></table></body></html>`;
@@ -2123,12 +2144,12 @@
         /* ============ IMPORT DATA DARI EXCEL / CSV ============ */
         let importParsedItems = [];
 
-        const IMPORT_TEMPLATE_HEADERS = ["MAKER","TIPE","JENIS","RAK","MIN_STOK","MESIN_AREA","STOK"];
+        const IMPORT_TEMPLATE_HEADERS = ["MAKER","TIPE","JENIS","RAK","MIN_STOK","MESIN_AREA","STOK","TANGGAL_DATANG"];
         const IMPORT_TEMPLATE_ROWS = [
             ["Schneider","MCB 3 Phase 10A","Miniature Circuit Breaker","A-01",5,"Mesin Filler",8],
             ["Mitsubishi","MR-J3BUS03M","Servo Communication Cable","E-03",2,"Mesin Filler",3],
             ["SKF","Bearing 6205 ZZ","Ball Bearing","B-12",10,"Pompa Air WTP",12],
-            ["Festo","Silinder Pneumatik DSNU","Pneumatic Cylinder","C-05",2,"Mesin Case Packer:4; Conveyor Line A:2",""]
+            ["Festo","Silinder Pneumatik DSNU","Pneumatic Cylinder","C-05",2,"Mesin Case Packer:4; Conveyor Line A:2","",""]
         ];
 
         function openImportModal() {
@@ -2148,7 +2169,7 @@
 
         function downloadTemplate(type) {
             const ws = XLSX.utils.aoa_to_sheet([IMPORT_TEMPLATE_HEADERS, ...IMPORT_TEMPLATE_ROWS]);
-            ws['!cols'] = [{wch:16},{wch:28},{wch:14},{wch:10},{wch:10},{wch:38},{wch:8}];
+            ws['!cols'] = [{wch:16},{wch:28},{wch:28},{wch:10},{wch:10},{wch:38},{wch:8},{wch:16}];
             if (type === 'csv') {
                 const csv = XLSX.utils.sheet_to_csv(ws);
                 const blob = new Blob(["\ufeff" + csv], {type:'text/csv;charset=utf-8;'});
@@ -2219,6 +2240,22 @@
             return `${String(maker || '').toLowerCase().trim()}||${String(tipe || '').toLowerCase().trim()}`;
         }
 
+        function normalizeArrivalDate(value) {
+            if (value === undefined || value === null || String(value).trim() === '') return new Date().toISOString().slice(0,10);
+            if (typeof value === 'number' && value > 20000 && value < 80000) {
+                const d = XLSX.SSF.parse_date_code(value);
+                if (d) return `${d.y}-${String(d.m).padStart(2,'0')}-${String(d.d).padStart(2,'0')}`;
+            }
+            const v = String(value).trim();
+            if (/^\\d{4}-\\d{1,2}-\\d{1,2}$/.test(v)) {
+                const [y,m,d] = v.split('-'); return `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
+            }
+            const m = v.match(/^(\\d{1,2})[\\/-](\\d{1,2})[\\/-](\\d{4})$/);
+            if (m) return `${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+            const parsed = new Date(v);
+            return isNaN(parsed) ? new Date().toISOString().slice(0,10) : parsed.toISOString().slice(0,10);
+        }
+
         function parseImportRows(rows) {
             const map = {};
             let skipped = 0, machineRows = 0;
@@ -2233,10 +2270,11 @@
                 const minStok = parseInt(_pick(row, ['minstok','minstock','stokmin','minimum','minimalstok'])) || 0;
                 const mesinRaw= _pick(row, ['mesinarea','mesin','area','machine','mesinlokasi','lokasimesin']);
                 const stokRaw = _pick(row, ['stok','stock','qty','jumlah','qtystok','stokmesin']);
+                const tanggalDatang = normalizeArrivalDate(_pick(row, ['tanggaldatang','tanggalbarangdatang','tanggalterima','tglterima','arrivaldate','receiveddate']));
 
                 const key = _importIdentity(maker, tipe);
                 if (!map[key]) {
-                    map[key] = { kode: '', maker, tipe, jenis, rak, minStok, mesinArea: [], machineStocks: {} };
+                    map[key] = { kode: '', maker, tipe, jenis, rak, minStok, tanggalDatang, mesinArea: [], machineStocks: {} };
                 } else {
                     const it = map[key];
                     if (minStok) it.minStok = minStok;
@@ -2332,6 +2370,7 @@
                         exist.jenis = src.jenis || exist.jenis;
                         exist.rak = src.rak || exist.rak;
                         exist.minStok = src.minStok || exist.minStok;
+                        if (src.tanggalDatang) exist.tanggalDatang = src.tanggalDatang;
                         exist.mesinArea = exist.mesinArea || [];
                         exist.machineStocks = exist.machineStocks || {};
                         src.mesinArea.forEach(m => {
