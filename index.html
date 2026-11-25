@@ -43,21 +43,25 @@
         }
         .modal-fullscreen-mode > div:first-child, .modal-fullscreen-mode > div:last-child { border-radius: 0 !important; }
 
-        /* Overlay proses database: mencegah klik/aksi lain saat memuat atau menyimpan */
-        #databaseBusyOverlay { position: fixed; inset: 0; z-index: 20000; display: none; align-items: center; justify-content: center; padding: 1rem; background: rgba(15, 23, 42, .48); backdrop-filter: blur(2px); cursor: wait; }
+        /* Popup status database kecil dan tidak mengunci halaman */
+        #databaseBusyOverlay { position: fixed; right: 1rem; bottom: 1rem; z-index: 20000; display: none; align-items: center; justify-content: flex-start; pointer-events: none; }
         #databaseBusyOverlay.active { display: flex; }
+        #databaseBusyOverlay > div { width: auto; max-width: min(22rem, calc(100vw - 2rem)); display:flex; align-items:center; gap:.75rem; text-align:left; padding:.75rem 1rem; border-radius:1rem; box-shadow:0 10px 30px rgba(15,23,42,.18); border:1px solid #e2e8f0; }
+        #databaseBusyIconWrap { width:2.25rem; height:2.25rem; flex-shrink:0; border-radius:9999px; display:flex; align-items:center; justify-content:center; background:#eff6ff; color:#2563eb; }
+        #databaseBusyMessage { display:none; }
+        @media (min-width:640px) { #databaseBusyMessage { display:block; } }
     </style>
 </head>
 <body class="bg-slate-50 flex h-screen overflow-hidden text-slate-800">
 
-    <!-- Pengunci interaksi sementara saat proses database berlangsung -->
-    <div id="databaseBusyOverlay" role="status" aria-live="polite" aria-modal="true">
-        <div class="w-full max-w-xs rounded-2xl bg-white shadow-2xl px-7 py-6 text-center">
-            <div class="w-14 h-14 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center mx-auto mb-4">
-                <i class="fa-solid fa-circle-notch fa-spin text-2xl"></i>
+    <!-- Popup kecil status proses database; tidak memblokir akses halaman -->
+    <div id="databaseBusyOverlay" role="status" aria-live="polite">
+        <div class="bg-white">
+            <div id="databaseBusyIconWrap"><i class="fa-solid fa-circle-notch fa-spin" id="databaseBusyIcon"></i></div>
+            <div class="min-w-0">
+                <div id="databaseBusyTitle" class="text-sm font-bold text-slate-800">Memuat data...</div>
+                <div id="databaseBusyMessage" class="text-xs text-slate-500 mt-1">Proses sedang berlangsung.</div>
             </div>
-            <div id="databaseBusyTitle" class="text-base font-extrabold text-slate-800">Memuat data...</div>
-            <div id="databaseBusyMessage" class="text-xs text-slate-500 mt-2">Mohon tunggu, jangan melakukan tindakan lain.</div>
         </div>
     </div>
 
@@ -1803,21 +1807,18 @@
             return nama || 'Belum ditentukan';
         }
 
-        // Overlay ini mengunci seluruh interaksi agar pengguna tidak memulai aksi
-        // lain ketika data sedang dibaca atau dikirim ke Google Sheets.
-        function showDatabaseBusy(title, message = 'Mohon tunggu, jangan melakukan tindakan lain.') {
-            const overlay = document.getElementById('databaseBusyOverlay');
-            if (!overlay) return;
+        // Popup status ringan: pengguna tetap dapat mengakses menu dan melakukan aktivitas lain.
+        function showDatabaseBusy(title, message = 'Proses sedang berlangsung.') {
+            const popup = document.getElementById('databaseBusyOverlay');
+            if (!popup) return;
             document.getElementById('databaseBusyTitle').textContent = title;
             document.getElementById('databaseBusyMessage').textContent = message;
-            overlay.classList.add('active');
-            document.body.setAttribute('aria-busy', 'true');
+            popup.classList.add('active');
         }
 
         function hideDatabaseBusy() {
-            const overlay = document.getElementById('databaseBusyOverlay');
-            if (overlay) overlay.classList.remove('active');
-            document.body.removeAttribute('aria-busy');
+            const popup = document.getElementById('databaseBusyOverlay');
+            if (popup) popup.classList.remove('active');
         }
 
         function normalizeCloudData(data) {
@@ -1842,6 +1843,8 @@
         let localDirty = false;
         let suppressSync = false;
         let localEditVersion = 0;
+        let syncCursor = 0;
+        let pollTimer = null, pollDelay = 4000, pollingBusy = false;
         const clone = (v) => JSON.parse(JSON.stringify(v));
 
         async function fetchCloud() {
@@ -1849,6 +1852,7 @@
             if (!res.ok) throw new Error('HTTP ' + res.status);
             const raw = await res.json();
             if (raw && raw.status === 'error') throw new Error(raw.pesan || 'Gagal membaca data dari server');
+            syncCursor = Number(raw.cursor || 0);
             return normalizeCloudData((raw && raw.data ? raw.data : raw) || {});
         }
 
@@ -1862,6 +1866,26 @@
             try { refreshAllUI(); } finally { suppressSync = false; }
         }
 
+        async function pollCloudChanges(){
+            if(pollingBusy || !cloudReady || localDirty || isSyncing || document.hidden){scheduleSmartPoll();return;}
+            pollingBusy=true;
+            try{
+                const res=await fetch(`${API_URL}?action=getChanges&cursor=${syncCursor}&t=${Date.now()}`,{cache:'no-store'});
+                if(!res.ok) throw new Error('HTTP '+res.status);
+                const data=await res.json(); if(data.status==='error')throw new Error(data.pesan||'Polling gagal');
+                if(Array.isArray(data.changes)&&data.changes.length){
+                    let next=clone({items,history,borrowedRecords});
+                    const byId=new Map(next.items.map(x=>[String(x.id),x]));
+                    data.changes.forEach(ch=>{const p=ch.payload||{};(p.deletedIds||[]).forEach(id=>byId.delete(String(id)));(p.items||[]).forEach(it=>byId.set(String(it.id),it));(p.historyAppend||[]).forEach(h=>{if(!next.history.some(x=>JSON.stringify(x)===JSON.stringify(h)))next.history.unshift(h);});(p.borrowedUpsert||[]).forEach(b=>{const ix=next.borrowedRecords.findIndex(x=>String(x.id)===String(b.id));if(ix>=0)next.borrowedRecords[ix]=b;else next.borrowedRecords.push(b);});});
+                    next.items=Array.from(byId.values()); syncCursor=Number(data.cursor||syncCursor); suppressSync=true;try{applyData(normalizeCloudData(next));}finally{suppressSync=false;}
+                    setCloudStatus('ok','Data diperbarui dari perangkat lain');
+                }else syncCursor=Number(data.cursor||syncCursor);
+                pollDelay=document.hidden?15000:4000;
+            }catch(err){console.warn('Smart polling:',err);pollDelay=Math.min(30000,pollDelay*1.7);}finally{pollingBusy=false;scheduleSmartPoll();}
+        }
+        function scheduleSmartPoll(){clearTimeout(pollTimer);if(!cloudReady)return;pollTimer=setTimeout(pollCloudChanges,pollDelay);}
+        document.addEventListener('visibilitychange',()=>{clearTimeout(pollTimer);pollDelay=document.hidden?15000:4000;if(!document.hidden)scheduleSmartPoll();});
+
         async function loadFromCloud(manual = false) {
             if (isSyncing) {
                 showToast('Penyimpanan sedang berlangsung. Coba refresh kembali setelah selesai.', 'info');
@@ -1872,13 +1896,14 @@
                 if (!lanjut) return;
                 clearTimeout(syncTimer);
             }
-            showDatabaseBusy('Memuat data dari database...', 'Mohon tunggu sampai data selesai dimuat.');
+            showDatabaseBusy('Memuat data...', '');
             if (manual || !baseSnapshot) setCloudStatus('loading', 'Memuat data dari database...');
             try {
                 const clean = await fetchCloud();
                 applyData(clean);
                 cloudReady = true;
                 setCloudStatus('ok', `${items.length} barang dimuat dari database`);
+                pollDelay=4000; scheduleSmartPoll();
                 if (manual) showToast(`Data berhasil dimuat ulang dari database (${items.length} barang).`, 'success');
             } catch (err) {
                 console.error('Gagal memuat dari database:', err);
@@ -1893,16 +1918,21 @@
             if (isSyncing || (!localDirty && !manual)) return;
             isSyncing = true;
             clearTimeout(syncTimer);
-            showDatabaseBusy('Menyimpan data ke database...', 'Mohon tunggu. Jangan menambah, mengurangi, menghapus, atau mengubah data dulu.');
+            showDatabaseBusy('Menyimpan data...', 'Anda tetap dapat menggunakan menu lain.');
             setCloudStatus('saving', 'Menyimpan ke database...');
             const savingVersion = localEditVersion;
             try {
-                const payload = {
-                    action: 'saveData',
-                    items: clone(items),
-                    history: clone(history),
-                    borrowedRecords: clone(borrowedRecords)
-                };
+                const base = baseSnapshot || {items:[],history:[],borrowedRecords:[]};
+                const baseById = new Map((base.items||[]).map(x=>[String(x.id),x]));
+                const currentById = new Map((items||[]).map(x=>[String(x.id),x]));
+                const changedItems = (items||[]).filter(x => !baseById.has(String(x.id)) || JSON.stringify(x)!==JSON.stringify(baseById.get(String(x.id))));
+                const deletedIds = (base.items||[]).filter(x=>!currentById.has(String(x.id))).map(x=>x.id);
+                // Riwayat umumnya ditambahkan di depan array; kirim hanya entri baru sejak snapshot.
+                const oldHistory=(base.history||[]); const newHistory=(history||[]);
+                let historyAppend=[]; if(newHistory.length>=oldHistory.length){const prefix=newHistory.slice(oldHistory.length);const tail=newHistory.slice(0,oldHistory.length);if(JSON.stringify(tail)===JSON.stringify(oldHistory))historyAppend=prefix;else historyAppend=newHistory.filter(x=>!oldHistory.some(y=>JSON.stringify(y)===JSON.stringify(x)));}else historyAppend=newHistory.filter(x=>!oldHistory.some(y=>JSON.stringify(y)===JSON.stringify(x)));
+                const baseLoans=new Map((base.borrowedRecords||[]).map(x=>[String(x.id),x]));
+                const borrowedUpsert=(borrowedRecords||[]).filter(x=>!baseLoans.has(String(x.id))||JSON.stringify(x)!==JSON.stringify(baseLoans.get(String(x.id))));
+                const payload={action:'saveIncremental',requestId:(window.crypto&&crypto.randomUUID?crypto.randomUUID():'req-'+Date.now()+'-'+Math.random().toString(36).slice(2)),items:changedItems,deletedIds,historyAppend,borrowedUpsert};
                 const res = await fetch(API_URL, {
                     method: 'POST',
                     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -1912,11 +1942,9 @@
                 const result = await res.json();
                 if (!result || result.status !== 'ok') throw new Error((result && result.pesan) || 'Server menolak penyimpanan');
 
-                // Baca kembali hasil terakhir yang benar-benar ada di database.
-                const latest = await fetchCloud();
                 cloudReady = true;
                 if (localEditVersion === savingVersion) {
-                    applyData(latest);
+                    baseSnapshot = clone({items,history,borrowedRecords}); localDirty=false;
                     setCloudStatus('ok', 'Database tersimpan ' + new Date().toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'}));
                 } else {
                     // Ada input baru saat request berjalan: jangan timpa tampilan lokal.
@@ -1940,7 +1968,7 @@
             clearTimeout(syncTimer);
             // Tampilkan pengunci segera setelah aksi lokal dilakukan, termasuk
             // tambah barang, transaksi masuk/keluar, peminjaman, dan penghapusan.
-            showDatabaseBusy('Menyimpan perubahan...', 'Mohon tunggu sampai penyimpanan selesai.');
+            showDatabaseBusy('Menunggu penyimpanan...', 'Anda tetap dapat menggunakan menu lain.');
             syncTimer = setTimeout(() => syncToCloud(false), 700);
         }
 
@@ -1951,7 +1979,7 @@
         }
 
         // Perubahan pengguna disimpan langsung setelah jeda singkat.
-        // Tidak ada polling otomatis; perangkat lain memperbarui tampilan lewat tombol refresh.
+        // Smart polling: polling adaptif, berhenti saat tab tersembunyi/ada edit atau sync.
         const _origTriggerUIUpdate = triggerUIUpdate;
         triggerUIUpdate = function() {
             _origTriggerUIUpdate.apply(this, arguments);
