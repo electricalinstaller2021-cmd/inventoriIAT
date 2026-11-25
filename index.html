@@ -42,9 +42,24 @@
             border-radius: 0 !important; z-index: 9999 !important;
         }
         .modal-fullscreen-mode > div:first-child, .modal-fullscreen-mode > div:last-child { border-radius: 0 !important; }
+
+        /* Overlay proses database: mencegah klik/aksi lain saat memuat atau menyimpan */
+        #databaseBusyOverlay { position: fixed; inset: 0; z-index: 20000; display: none; align-items: center; justify-content: center; padding: 1rem; background: rgba(15, 23, 42, .48); backdrop-filter: blur(2px); cursor: wait; }
+        #databaseBusyOverlay.active { display: flex; }
     </style>
 </head>
 <body class="bg-slate-50 flex h-screen overflow-hidden text-slate-800">
+
+    <!-- Pengunci interaksi sementara saat proses database berlangsung -->
+    <div id="databaseBusyOverlay" role="status" aria-live="polite" aria-modal="true">
+        <div class="w-full max-w-xs rounded-2xl bg-white shadow-2xl px-7 py-6 text-center">
+            <div class="w-14 h-14 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center mx-auto mb-4">
+                <i class="fa-solid fa-circle-notch fa-spin text-2xl"></i>
+            </div>
+            <div id="databaseBusyTitle" class="text-base font-extrabold text-slate-800">Memuat data...</div>
+            <div id="databaseBusyMessage" class="text-xs text-slate-500 mt-2">Mohon tunggu, jangan melakukan tindakan lain.</div>
+        </div>
+    </div>
 
     <!-- Overlay Mobile -->
     <div id="sidebarOverlay" onclick="toggleSidebar()" class="fixed inset-0 bg-slate-900/50 z-40 hidden transition-opacity opacity-0 lg:hidden"></div>
@@ -1788,6 +1803,23 @@
             return nama || 'Belum ditentukan';
         }
 
+        // Overlay ini mengunci seluruh interaksi agar pengguna tidak memulai aksi
+        // lain ketika data sedang dibaca atau dikirim ke Google Sheets.
+        function showDatabaseBusy(title, message = 'Mohon tunggu, jangan melakukan tindakan lain.') {
+            const overlay = document.getElementById('databaseBusyOverlay');
+            if (!overlay) return;
+            document.getElementById('databaseBusyTitle').textContent = title;
+            document.getElementById('databaseBusyMessage').textContent = message;
+            overlay.classList.add('active');
+            document.body.setAttribute('aria-busy', 'true');
+        }
+
+        function hideDatabaseBusy() {
+            const overlay = document.getElementById('databaseBusyOverlay');
+            if (overlay) overlay.classList.remove('active');
+            document.body.removeAttribute('aria-busy');
+        }
+
         function normalizeCloudData(data) {
             const arr = (v) => Array.isArray(v) ? v : [];
             const cleanItems = arr(data.items).map(it => ({
@@ -1840,6 +1872,7 @@
                 if (!lanjut) return;
                 clearTimeout(syncTimer);
             }
+            showDatabaseBusy('Memuat data dari database...', 'Mohon tunggu sampai data selesai dimuat.');
             if (manual || !baseSnapshot) setCloudStatus('loading', 'Memuat data dari database...');
             try {
                 const clean = await fetchCloud();
@@ -1851,6 +1884,8 @@
                 console.error('Gagal memuat dari database:', err);
                 setCloudStatus('error', 'Gagal membaca database');
                 showToast('Tidak berhasil mengambil data dari Google Sheet. Data di layar tidak diubah.', 'error');
+            } finally {
+                hideDatabaseBusy();
             }
         }
 
@@ -1858,6 +1893,7 @@
             if (isSyncing || (!localDirty && !manual)) return;
             isSyncing = true;
             clearTimeout(syncTimer);
+            showDatabaseBusy('Menyimpan data ke database...', 'Mohon tunggu. Jangan menambah, mengurangi, menghapus, atau mengubah data dulu.');
             setCloudStatus('saving', 'Menyimpan ke database...');
             const savingVersion = localEditVersion;
             try {
@@ -1896,11 +1932,15 @@
                 showToast('Penyimpanan gagal. Data masih tampil di perangkat ini. Periksa koneksi lalu coba lagi.', 'error');
             } finally {
                 isSyncing = false;
+                hideDatabaseBusy();
             }
         }
 
         function scheduleSync() {
             clearTimeout(syncTimer);
+            // Tampilkan pengunci segera setelah aksi lokal dilakukan, termasuk
+            // tambah barang, transaksi masuk/keluar, peminjaman, dan penghapusan.
+            showDatabaseBusy('Menyimpan perubahan...', 'Mohon tunggu sampai penyimpanan selesai.');
             syncTimer = setTimeout(() => syncToCloud(false), 700);
         }
 
