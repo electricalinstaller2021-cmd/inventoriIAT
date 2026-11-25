@@ -1805,257 +1805,103 @@
             };
         }
 
-        // ===== Sinkron aman multi-user =====
-        let baseSnapshot = null;      // data terakhir yang sama dengan Sheet
-        let localDirty = false;       // ada perubahan lokal yang belum tersimpan
-        let syncAgain = false;        // ada perubahan baru saat sedang menyimpan
-        let suppressSync = false;     // jangan simpan saat UI diperbarui karena memuat data
+        // ===== Sinkronisasi sederhana: simpan langsung, refresh manual =====
+        let baseSnapshot = null;
+        let localDirty = false;
+        let suppressSync = false;
+        let localEditVersion = 0;
         const clone = (v) => JSON.parse(JSON.stringify(v));
-        const recKey = (r) => JSON.stringify(r);
 
         async function fetchCloud() {
-            const res = await fetch(`${API_URL}?action=getData&t=${Date.now()}`);
+            const res = await fetch(`${API_URL}?action=getData&t=${Date.now()}`, { cache: 'no-store' });
             if (!res.ok) throw new Error('HTTP ' + res.status);
             const raw = await res.json();
             if (raw && raw.status === 'error') throw new Error(raw.pesan || 'Gagal membaca data dari server');
             return normalizeCloudData((raw && raw.data ? raw.data : raw) || {});
         }
 
-        // ===== Data tertunda disimpan di perangkat (localStorage) =====
-        const PENDING_KEY = 'inv_pending_v1';
-        function savePendingLocal() {
-            try { localStorage.setItem(PENDING_KEY, JSON.stringify({ items, history, borrowedRecords, base: baseSnapshot, t: Date.now() })); } catch (e) {}
-        }
-        function clearPendingLocal() { try { localStorage.removeItem(PENDING_KEY); } catch (e) {} }
-        function readPendingLocal() { try { return JSON.parse(localStorage.getItem(PENDING_KEY) || 'null'); } catch (e) { return null; } }
-
         function applyData(d) {
-            items = d.items; history = d.history; borrowedRecords = d.borrowedRecords;
+            items = d.items;
+            history = d.history;
+            borrowedRecords = d.borrowedRecords;
             baseSnapshot = clone(d);
+            localDirty = false;
             suppressSync = true;
             try { refreshAllUI(); } finally { suppressSync = false; }
         }
 
-        // Gabungkan perubahan lokal (dibanding baseSnapshot) ke data terbaru di Sheet
-        function mergeData(remote) {
-            const base = baseSnapshot || { items: [], history: [], borrowedRecords: [] };
-            const baseMap = new Map(base.items.map(i => [i.id, i]));
-            const localMap = new Map(items.map(i => [i.id, i]));
-            const out = new Map(remote.items.map(i => [i.id, clone(i)]));
-            const usedKode = () => new Set([...out.values()].map(i => i.kode));
-            // barang dihapus lokal
-            base.items.forEach(b => { if (!localMap.has(b.id)) out.delete(b.id); });
-            lastRemap = [];
-            items.forEach(loc => {
-                const b = baseMap.get(loc.id);
-                if (!b) { // barang baru
-                    const n = clone(loc);
-                    // sudah masuk dari percobaan simpan sebelumnya? jangan dobel
-                    const same = [...out.values()].find(r => r.tipe === n.tipe && r.maker === n.maker && (r.id === n.id || r.kode === n.kode));
-                    if (same) { lastRemap.push({ oldId: loc.id, newId: same.id, kode: same.kode }); return; }
-                    if (out.has(n.id)) n.id = Math.max(0, ...[...out.keys()].map(Number)) + 1;
-                    const kodes = usedKode();
-                    if (kodes.has(n.kode)) {
-                        const m = String(n.kode).match(/^(.*-)(\d+)$/);
-                        if (m) { let k = parseInt(m[2], 10); let c; do { k++; c = m[1] + String(k).padStart(m[2].length, '0'); } while (kodes.has(c)); n.kode = c; }
-                    }
-                    if (n.id !== loc.id || n.kode !== loc.kode) lastRemap.push({ oldId: loc.id, newId: n.id, kode: n.kode });
-                    out.set(n.id, n); return;
-                }
-                const r = out.get(loc.id);
-                if (!r) return; // sudah dihapus user lain
-                Object.keys(loc).forEach(f => {
-                    if (f === 'machineStocks' || f === 'id') return;
-                    if (JSON.stringify(loc[f]) !== JSON.stringify(b[f])) r[f] = clone(loc[f]);
-                });
-                const ms = { ...(r.machineStocks || {}) };
-                const keys = new Set([...Object.keys(loc.machineStocks || {}), ...Object.keys(b.machineStocks || {})]);
-                keys.forEach(k => {
-                    const delta = (Number(loc.machineStocks?.[k]) || 0) - (Number(b.machineStocks?.[k]) || 0);
-                    if (delta !== 0) ms[k] = Math.max(0, (Number(ms[k]) || 0) + delta);
-                    if (!(k in (loc.machineStocks || {})) && (k in (b.machineStocks || {}))) delete ms[k];
-                });
-                r.machineStocks = ms;
-            });
-            const mergeList = (remoteL, baseL, localL, keyFn) => {
-                const baseK = new Set(baseL.map(keyFn)), localK = new Set(localL.map(keyFn));
-                const kept = remoteL.filter(x => !(baseK.has(keyFn(x)) && !localK.has(keyFn(x))));
-                const have = new Set(kept.map(keyFn));
-                const added = localL.filter(x => !baseK.has(keyFn(x)) && !have.has(keyFn(x)));
-                return [...added, ...kept];
-            };
-            const bKey = (r) => r.id != null ? 'id:' + r.id : recKey(r);
-            // peminjaman: catatan yang diubah lokal menggantikan versi Sheet
-            const baseB = new Map(base.borrowedRecords.map(r => [bKey(r), recKey(r)]));
-            let borrowed = mergeList(remote.borrowedRecords, base.borrowedRecords, borrowedRecords, bKey);
-            const localB = new Map(borrowedRecords.map(r => [bKey(r), r]));
-            borrowed = borrowed.map(r => { const l = localB.get(bKey(r)); return (l && baseB.has(bKey(r)) && recKey(l) !== baseB.get(bKey(r))) ? l : r; });
-            return {
-                items: [...out.values()],
-                history: mergeList(remote.history, base.history, history, recKey),
-                borrowedRecords: borrowed
-            };
-        }
-
         async function loadFromCloud(manual = false) {
-            if (isSyncing || (localDirty && !manual)) return;
-            if (manual && localDirty) { await syncToCloud(true); return; }
-            if (manual || !baseSnapshot) setCloudStatus('loading', 'Memuat data...');
+            if (isSyncing) {
+                showToast('Penyimpanan sedang berlangsung. Coba refresh kembali setelah selesai.', 'info');
+                return;
+            }
+            if (manual && localDirty) {
+                const lanjut = confirm('Ada perubahan di perangkat ini yang belum selesai disimpan. Muat ulang dari database akan mengganti perubahan lokal tersebut. Lanjutkan?');
+                if (!lanjut) return;
+                clearTimeout(syncTimer);
+            }
+            if (manual || !baseSnapshot) setCloudStatus('loading', 'Memuat data dari database...');
             try {
                 const clean = await fetchCloud();
-                if (clean.items.length === 0) {
-                    if (items.length === 0) generateDummyData();
-                    cloudReady = false;
-                    setCloudStatus('error', 'Sheet kosong');
-                    suppressSync = true; try { refreshAllUI(); } finally { suppressSync = false; }
-                    if (confirm('Google Sheet terbaca kosong. Unggah data yang tampil sekarang ke Sheet?\n(Pilih Batal jika Sheet seharusnya berisi data.)')) {
-                        baseSnapshot = { items: [], history: [], borrowedRecords: [] };
-                        cloudReady = true; localDirty = true; syncToCloud(true);
-                    }
-                    return;
-                }
-                if (localDirty || isSyncing) return; // ada perubahan baru saat memuat
-                const pend = !baseSnapshot ? readPendingLocal() : null;
-                if (pend && pend.base) {
-                    // ada data lokal yang belum masuk Sheet dari sesi sebelumnya -> kirim otomatis
-                    baseSnapshot = normalizeCloudData(pend.base);
-                    const loc = normalizeCloudData(pend);
-                    items = loc.items; history = loc.history; borrowedRecords = loc.borrowedRecords;
-                    suppressSync = true; try { refreshAllUI(); } finally { suppressSync = false; }
-                    cloudReady = true; localDirty = true;
-                    setCloudStatus('saving', 'Mengirim data lokal tertunda...');
-                    syncToCloud(false);
-                    return;
-                }
                 applyData(clean);
                 cloudReady = true;
-                setCloudStatus('ok', `${items.length} data dimuat`);
-                if (manual) showToast(`Data dimuat dari Google Sheet (${items.length} barang).`, 'success');
+                setCloudStatus('ok', `${items.length} barang dimuat dari database`);
+                if (manual) showToast(`Data berhasil dimuat ulang dari database (${items.length} barang).`, 'success');
             } catch (err) {
-                console.error('Gagal memuat dari Sheet:', err);
-                if (!baseSnapshot) {
-                    cloudReady = false;
-                    setCloudStatus('error', 'Gagal terhubung — data lokal');
-                    showToast('Gagal memuat data dari Google Sheet. Sistem memakai data lokal sementara.', 'error');
-                    if (items.length === 0) generateDummyData();
-                    suppressSync = true; try { refreshAllUI(); } finally { suppressSync = false; }
-                }
+                console.error('Gagal memuat dari database:', err);
+                setCloudStatus('error', 'Gagal membaca database');
+                showToast('Tidak berhasil mengambil data dari Google Sheet. Data di layar tidak diubah.', 'error');
             }
-        }
-
-        // ===== Antrian simpan: kirim -> cek ulang -> kirim lagi jika tertimpa =====
-        let lastRemap = [];
-        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-        const msVal = (it, k) => Number(it?.machineStocks?.[k]) || 0;
-
-        // Apakah perubahan kita masih ada di Sheet? (false = tertimpa user lain)
-        function verifySaved(latest, before, merged) {
-            const latestH = new Set(latest.history.map(recKey));
-            const beforeH = new Set(before.history.map(recKey));
-            for (const h of merged.history) { const k = recKey(h); if (!beforeH.has(k) && !latestH.has(k)) return false; }
-            const bk = (r) => r.id != null ? 'id:' + r.id : recKey(r);
-            const latestB = new Set(latest.borrowedRecords.map(bk));
-            const beforeB = new Set(before.borrowedRecords.map(bk));
-            for (const r of merged.borrowedRecords) { const k = bk(r); if (!beforeB.has(k) && !latestB.has(k)) return false; }
-            const beforeMap = new Map(before.items.map(i => [i.id, i]));
-            const latestMap = new Map(latest.items.map(i => [i.id, i]));
-            const latestKode = new Set(latest.items.map(i => i.kode));
-            const mergedIds = new Set(merged.items.map(i => i.id));
-            for (const m of merged.items) {
-                const b = beforeMap.get(m.id);
-                if (!b) { if (!latestKode.has(m.kode)) return false; continue; }
-                const l = latestMap.get(m.id);
-                if (!l) continue; // dihapus user lain setelahnya
-                for (const f of Object.keys(m)) {
-                    if (f === 'id' || f === 'machineStocks') continue;
-                    const mv = JSON.stringify(m[f]), bv = JSON.stringify(b[f]);
-                    if (mv !== bv && JSON.stringify(l[f]) === bv) return false;
-                }
-                const keys = new Set([...Object.keys(m.machineStocks || {}), ...Object.keys(b.machineStocks || {})]);
-                for (const k of keys) {
-                    if (msVal(m, k) !== msVal(b, k) && msVal(l, k) === msVal(b, k)) return false;
-                }
-            }
-            for (const b of before.items) { if (!mergedIds.has(b.id) && latestMap.has(b.id)) return false; }
-            return true;
         }
 
         async function syncToCloud(manual = false) {
-            if (isSyncing) { syncAgain = true; return; }
-            if (!localDirty && !manual) return;
+            if (isSyncing || (!localDirty && !manual)) return;
             isSyncing = true;
-            const MAX_TRY = 6;
-            savePendingLocal();
-            let saved = false;
+            clearTimeout(syncTimer);
+            setCloudStatus('saving', 'Menyimpan ke database...');
+            const savingVersion = localEditVersion;
             try {
-                // jeda acak kecil agar 2 perangkat yang menekan bersamaan tidak persis berbarengan
-                await sleep(Math.random() * 1200);
-                for (let attempt = 1; attempt <= MAX_TRY && !saved; attempt++) {
-                    setCloudStatus('saving', attempt === 1 ? 'Menyimpan...' : `Antri simpan (${attempt}/${MAX_TRY})...`);
-                    // TAHAN: cek apakah perangkat lain sedang menyimpan (Sheet berubah dalam beberapa detik)
-                    let before = await fetchCloud();
-                    for (let hold = 0; hold < 10; hold++) {
-                        await sleep(1500 + Math.random() * 1000);
-                        const again = await fetchCloud();
-                        if (JSON.stringify(again) === JSON.stringify(before)) break;
-                        before = again;
-                        setCloudStatus('saving', 'Menunggu perangkat lain selesai menyimpan...');
-                        await sleep(2000 + Math.random() * 2000);
-                    }
-                    setCloudStatus('saving', attempt === 1 ? 'Menyimpan...' : `Antri simpan (${attempt}/${MAX_TRY})...`);
-                    const merged = mergeData(before);
-                    const remap = lastRemap.slice();
-                    const res = await fetch(API_URL, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                        body: JSON.stringify({ action: 'saveData', ...merged })
-                    });
-                    if (!res.ok) throw new Error('HTTP ' + res.status);
-                    const saveResult = await res.json();
-                    if (!saveResult || saveResult.status !== 'ok') {
-                        throw new Error((saveResult && saveResult.pesan) || 'Server menolak penyimpanan data');
-                    }
-                    // cek ulang 2x: memastikan simpanan perangkat lain tidak menimpa data kita
-                    setCloudStatus('saving', 'Memeriksa simpanan...');
-                    await sleep(2500 + Math.random() * 1500);
-                    let latest = await fetchCloud();
-                    let ok = verifySaved(latest, before, merged);
-                    if (ok) {
-                        await sleep(4000 + Math.random() * 2000);
-                        latest = await fetchCloud();
-                        ok = verifySaved(latest, before, merged);
-                    }
-                    if (!ok) {
-                        console.warn(`Simpanan tertimpa perangkat lain, kirim ulang (percobaan ${attempt})`);
-                        await sleep(800 + Math.random() * 2000 * attempt);
-                        continue; // baseSnapshot & data lokal belum diubah -> digabung ulang ke data terbaru
-                    }
-                    saved = true;
-                    // samakan ID/kode barang baru lokal dengan yang tersimpan
-                    remap.forEach(m => { const it = items.find(i => i.id === m.oldId); if (it) { it.id = m.newId; it.kode = m.kode; } });
-                    cloudReady = true;
-                    if (!syncAgain) { localDirty = false; applyData(latest); clearPendingLocal(); }
-                    else { baseSnapshot = clone(merged); savePendingLocal(); }
+                const payload = {
+                    action: 'saveData',
+                    items: clone(items),
+                    history: clone(history),
+                    borrowedRecords: clone(borrowedRecords)
+                };
+                const res = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                    body: JSON.stringify(payload)
+                });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const result = await res.json();
+                if (!result || result.status !== 'ok') throw new Error((result && result.pesan) || 'Server menolak penyimpanan');
+
+                // Baca kembali hasil terakhir yang benar-benar ada di database.
+                const latest = await fetchCloud();
+                cloudReady = true;
+                if (localEditVersion === savingVersion) {
+                    applyData(latest);
+                    setCloudStatus('ok', 'Database tersimpan ' + new Date().toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'}));
+                } else {
+                    // Ada input baru saat request berjalan: jangan timpa tampilan lokal.
+                    localDirty = true;
+                    setCloudStatus('saving', 'Ada perubahan baru, menyimpan kembali...');
+                    scheduleSync();
                 }
-                if (!saved) throw new Error('Simpanan terus tertimpa perangkat lain');
-                setCloudStatus('ok', 'Tersimpan ' + new Date().toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit'}));
-                if (manual) showToast('Semua data berhasil disinkronkan ke Google Sheet.', 'success');
+                if (manual) showToast('Data berhasil dikirim ke database.', 'success');
             } catch (err) {
-                console.error('Gagal sinkron ke Sheet:', err);
+                console.error('Gagal menyimpan ke database:', err);
                 localDirty = true;
-                savePendingLocal();
-                setCloudStatus('error', 'Tersimpan di perangkat, menunggu antrian');
-                showToast('Data disimpan sementara di perangkat ini dan akan otomatis dikirim ke Google Sheet.', 'info');
-                clearTimeout(syncTimer); syncTimer = setTimeout(() => syncToCloud(false), 10000 + Math.random() * 5000);
+                setCloudStatus('error', 'Gagal menyimpan — data lokal belum terkirim');
+                showToast('Penyimpanan gagal. Data masih tampil di perangkat ini. Periksa koneksi lalu coba lagi.', 'error');
             } finally {
                 isSyncing = false;
-                if (syncAgain) { syncAgain = false; localDirty = true; scheduleSync(); }
             }
         }
 
         function scheduleSync() {
             clearTimeout(syncTimer);
-            syncTimer = setTimeout(() => syncToCloud(false), 1200);
+            syncTimer = setTimeout(() => syncToCloud(false), 700);
         }
 
         function refreshAllUI() {
@@ -2064,73 +1910,28 @@
             triggerUIUpdate();
         }
 
-        // Hanya perubahan dari user yang dikirim ke Google Sheet
+        // Perubahan pengguna disimpan langsung setelah jeda singkat.
+        // Tidak ada polling otomatis; perangkat lain memperbarui tampilan lewat tombol refresh.
         const _origTriggerUIUpdate = triggerUIUpdate;
         triggerUIUpdate = function() {
             _origTriggerUIUpdate.apply(this, arguments);
             if (cloudReady && !suppressSync) {
+                localEditVersion++;
                 localDirty = true;
-                savePendingLocal();
-                if (isSyncing) syncAgain = true; else scheduleSync();
+                scheduleSync();
             }
         };
 
-        // ============================================================
-        // SINKRONISASI ANTARPERANGKAT (POLLING DATABASE PUSAT)
-        // Perangkat memeriksa Google Sheets secara berkala.
-        // Jangan pernah menerapkan data remote saat ada perubahan lokal
-        // yang belum selesai disimpan, agar input pengguna tidak tertimpa.
-        // ============================================================
-        let cloudPollBusy = false;
-        let cloudPollTimer = null;
-
-        async function pollCloudForUpdates() {
-            if (!cloudReady || !baseSnapshot || localDirty || isSyncing || cloudPollBusy) return;
-            if (document.hidden) return;
-            cloudPollBusy = true;
-            try {
-                const latest = await fetchCloud();
-                // Bandingkan dengan snapshot terakhir yang sudah diterapkan di layar.
-                if (JSON.stringify(latest) !== JSON.stringify(baseSnapshot)) {
-                    // Periksa lagi setelah request: jangan timpa jika pengguna baru saja mengedit.
-                    if (localDirty || isSyncing) return;
-                    applyData(latest);
-                    setCloudStatus('ok', 'Data diperbarui dari perangkat lain');
-                }
-            } catch (err) {
-                console.warn('Pengecekan pembaruan cloud gagal:', err);
-                // Jangan ubah data layar atau snapshot jika koneksi sedang bermasalah.
-                setCloudStatus('offline', 'Koneksi database terganggu');
-            } finally {
-                cloudPollBusy = false;
-            }
-        }
-
-        function startCloudPolling() {
-            clearInterval(cloudPollTimer);
-            // 10 detik: cukup responsif untuk beberapa perangkat tanpa terlalu
-            // sering membebani Google Apps Script.
-            cloudPollTimer = setInterval(pollCloudForUpdates, 10000);
-        }
-
-        document.addEventListener('visibilitychange', () => {
-            if (!document.hidden) pollCloudForUpdates();
+        window.addEventListener('beforeunload', (e) => {
+            if (localDirty || isSyncing) { e.preventDefault(); e.returnValue = ''; }
         });
-        window.addEventListener('focus', () => pollCloudForUpdates());
-        window.addEventListener('online', () => {
-            if (localDirty && !isSyncing) scheduleSync();
-            else pollCloudForUpdates();
-        });
-        window.addEventListener('beforeunload', (e) => { if (localDirty || isSyncing) { e.preventDefault(); e.returnValue = ''; } });
 
         // --- Init ---
         window.onload = function() {
             initCharts();
             switchView('dashboard');
             setCloudStatus('loading', 'Memuat data...');
-            loadFromCloud(false).then(() => {
-                if (cloudReady) startCloudPolling();
-            });
+            loadFromCloud(false);
         };
     </script>
 
