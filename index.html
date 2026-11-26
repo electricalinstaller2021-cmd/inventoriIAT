@@ -680,6 +680,10 @@
                 </div>
             </div>
             
+            <div id="transactionCartWrapper" class="hidden px-6 pb-4">
+                <button type="button" onclick="addSelectedToCart()" class="w-full bg-blue-50 border border-blue-300 text-blue-700 font-bold rounded-lg p-2.5 hover:bg-blue-100"><i class="fa-solid fa-cart-plus mr-2"></i>Tambah Item ke Keranjang</button>
+                <div class="mt-3 border rounded-lg overflow-hidden"><div class="bg-slate-100 px-3 py-2 font-bold text-sm flex justify-between"><span>Keranjang Transaksi</span><span id="transactionCartCount">0 item</span></div><div id="transactionCartList" class="p-2 space-y-2 max-h-48 overflow-y-auto"><p class="text-center text-xs text-slate-400 py-3">Keranjang masih kosong</p></div></div>
+            </div>
             <div class="px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-2xl flex justify-end gap-3 shrink-0">
                 <button onclick="closeTransModal()" class="px-5 py-2.5 text-sm font-medium text-slate-600 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors shadow-sm">Batal</button>
                 <button id="btnSubmitTrans" onclick="submitTransaction()" class="px-5 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg shadow-md transition-colors">Proses</button>
@@ -701,6 +705,7 @@
         let searchCategory = 'all';
         let transType = '';
         let transItemId = null;
+        let transactionCart = [];
         let currentView = 'dashboard';
         
         let historyTabFilter = 'all';
@@ -1338,6 +1343,8 @@
                 lblMachine.innerHTML = 'Tujuan Penggunaan Mesin <span class="text-red-500">*</span>';
             }
 
+            document.getElementById('transactionCartWrapper').classList.toggle('hidden', id !== null);
+            transactionCart = []; renderTransactionCart();
             if (id === null) {
                 selectorWrapper.classList.remove('hidden'); staticWrapper.classList.add('hidden');
                 document.getElementById('modalSearchInput').value = ''; document.getElementById('modalCatFilter').value = 'Semua'; document.getElementById('modalDynType').value = 'mesinArea'; populateModalDynValues();
@@ -1379,7 +1386,40 @@
             }
         }
 
+        function renderTransactionCart() {
+            const list=document.getElementById('transactionCartList'); const count=document.getElementById('transactionCartCount');
+            if(!list||!count)return; count.textContent=transactionCart.length+' item';
+            if(!transactionCart.length){list.innerHTML='<p class="text-center text-xs text-slate-400 py-3">Keranjang masih kosong</p>';return;}
+            list.innerHTML=transactionCart.map((e,i)=>`<div class="flex items-center justify-between gap-2 border rounded-lg p-2"><div class="min-w-0"><p class="font-bold text-xs">${e.kode}</p><p class="text-xs text-slate-600 truncate">${e.maker} - ${e.tipe}</p><p class="text-xs text-blue-700">${e.machine} · ${e.qty} pcs</p></div><button onclick="removeCartItem(${i})" class="shrink-0 text-red-600 bg-red-50 rounded px-2 py-1" title="Hapus"><i class="fa-solid fa-trash"></i></button></div>`).join('');
+        }
+        function addSelectedToCart() {
+            const item=items.find(x=>x.id===transItemId); if(!item){showCustomAlert('Pilih sparepart terlebih dahulu.');return;}
+            const qty=parseInt(document.getElementById('transQty').value); const sel=document.getElementById('transMachineSelect').value; const manual=document.getElementById('transMachineManual').value.trim();
+            if(!qty||qty<=0){showCustomAlert('Jumlah harus valid (>0).');return;} if(!sel){showCustomAlert('Pilih Mesin/Area.');return;}
+            if(sel==='pinjam'){showCustomAlert('Mode keranjang tidak mendukung opsi pinjam antar mesin. Gunakan transaksi satu item untuk peminjaman.');return;}
+            const machine=sel==='manual'?manual:sel; if(sel==='manual'&&!machine){showCustomAlert('Nama mesin/area manual wajib diisi.');return;}
+            const key=transType==='in'&&machine==='Supplier Baru'?(item.mesinArea[0]||'Gudang Umum'):machine;
+            if(transType==='out'&&qty>(item.machineStocks[key]||0)){showCustomAlert(`Stok ${machine} tidak cukup (tersedia ${item.machineStocks[key]||0}).`);return;}
+            const existing=transactionCart.find(x=>x.itemId===item.id&&x.machine===machine);
+            if(existing) existing.qty+=qty; else transactionCart.push({itemId:item.id,kode:item.kode,maker:item.maker,tipe:item.tipe,machine,key,qty});
+            document.getElementById('transQty').value=''; renderTransactionCart(); showToast('Item ditambahkan ke keranjang','success');
+        }
+        function removeCartItem(index){transactionCart.splice(index,1);renderTransactionCart();}
+        function processTransactionCart(){
+            if(!transactionCart.length){showCustomAlert('Keranjang masih kosong.');return;}
+            const pic=document.getElementById('transPic').value.trim(), ket=document.getElementById('transKet').value.trim(), date=document.getElementById('transArrivalDate').value||new Date().toISOString().slice(0,10);
+            // Validasi seluruh keranjang sebelum mengubah stok, termasuk agregasi item/alokasi yang sama.
+            const totals=new Map(); transactionCart.forEach(e=>{const k=e.itemId+'|'+e.key;totals.set(k,(totals.get(k)||0)+e.qty);});
+            for(const [k,q] of totals){const [id,key]=k.split('|');const it=items.find(x=>String(x.id)===id);if(transType==='out'&&(!it||q>(it.machineStocks[key]||0))){showCustomAlert(`Stok ${it?.kode||'item'} pada ${key} tidak mencukupi untuk total ${q}.`);return;}}
+            transactionCart.forEach(e=>{const it=items.find(x=>x.id===e.itemId);if(!it)return;
+                if(transType==='out')it.machineStocks[e.key]-=e.qty;else{if(e.machine!=='Supplier Baru'&&!it.mesinArea.includes(e.machine))it.mesinArea.push(e.machine);if(it.machineStocks[e.key]!==undefined)it.machineStocks[e.key]+=e.qty;else it.machineStocks[e.key]=e.qty;if(transType==='in')it.tanggalDatang=date;}
+                addToHistory(transType,it,e.qty,e.machine,pic,ket,null,null,transType==='in'?date:null);
+            });
+            closeTransModal();triggerUIUpdate();showToast(`${transactionCart.length} item berhasil diproses.`, 'success');transactionCart=[];
+        }
+
         function submitTransaction() {
+            if (document.getElementById('transactionCartWrapper') && !document.getElementById('transactionCartWrapper').classList.contains('hidden')) { processTransactionCart(); return; }
             if (transItemId === null) { showCustomAlert("Harap pilih barang terlebih dahulu!"); return; }
             const qty = parseInt(document.getElementById('transQty').value); const pic = document.getElementById('transPic').value.trim(); const ket = document.getElementById('transKet').value.trim();
             const arrivalDate = document.getElementById('transArrivalDate').value || new Date().toISOString().slice(0, 10);
