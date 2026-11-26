@@ -103,6 +103,9 @@
             <button onclick="switchView('cart')" id="menu-cart" class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-300 hover:bg-slate-800 hover:text-white transition-colors border border-transparent">
                 <i class="fa-solid fa-cart-shopping w-5 text-center"></i><span class="text-sm font-medium truncate">Keranjang Part <span id="partCartBadge" class="ml-1 bg-amber-500 text-white rounded-full px-1.5 text-xs">0</span></span>
             </button>
+            <button onclick="switchView('guide')" id="menu-guide" class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-300 hover:bg-slate-800 hover:text-white transition-colors border border-transparent">
+                <i class="fa-solid fa-book-open w-5 text-center"></i><span class="text-sm font-medium truncate">Petunjuk & Ketentuan</span>
+            </button>
             <button onclick="openCompareModal()" id="menu-compare" class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-300 hover:bg-slate-800 hover:text-white transition-colors border border-transparent">
                 <i class="fa-solid fa-code-compare w-5 text-center"></i>
                 <span class="text-sm font-medium truncate">Perbandingan Stok</span>
@@ -328,7 +331,7 @@
                         </div>
                     </div>
 
-                    <div class="flex flex-wrap justify-between items-center gap-2"><p class="text-sm text-slate-500">Centang part yang ingin dikumpulkan ke keranjang.</p><button onclick="addSelectedPartsToCart()" class="bg-blue-600 text-white rounded-lg px-4 py-2 font-bold text-sm"><i class="fa-solid fa-cart-plus mr-2"></i>Masukkan ke Keranjang Biru</button></div>
+                    <div class="flex flex-wrap justify-between items-center gap-2"><p class="text-sm text-slate-500">Centang part yang ingin dikumpulkan ke keranjang.</p><button onclick="addSelectedPartsToCart()" class="bg-blue-600 text-white rounded-lg px-4 py-2 font-bold text-sm"><i class="fa-solid fa-cart-plus mr-2"></i>Masukkan Pilihan ke Keranjang</button></div>
                     <!-- Data Tabel Barang -->
                     <div class="bg-white rounded-xl shadow-sm border border-slate-200 flex-1 flex flex-col relative overflow-hidden">
                         <div class="overflow-auto flex-1">
@@ -369,6 +372,26 @@
                   <div class="flex gap-2"><button onclick="bulkCartProcess('in')" class="bg-emerald-600 text-white rounded-lg px-3 py-2 text-sm font-bold">Proses Barang Masuk</button><button onclick="bulkCartProcess('out')" class="bg-red-600 text-white rounded-lg px-3 py-2 text-sm font-bold">Proses Barang Keluar</button></div>
                 </div>
                 <div class="p-4"><div id="partCartView" class="space-y-3"></div></div>
+              </div>
+            </div>
+
+            <!-- Halaman Petunjuk & Ketentuan (CRUD) -->
+            <div id="view-guide" class="absolute inset-0 overflow-auto p-4 lg:p-6 hidden flex-col bg-slate-100">
+              <div class="max-w-7xl mx-auto w-full space-y-4">
+                <div class="bg-white rounded-xl border shadow-sm p-5 flex flex-wrap gap-3 justify-between items-center">
+                  <div><h3 class="font-bold text-xl text-slate-800"><i class="fa-solid fa-book-open text-blue-600 mr-2"></i>Petunjuk & Ketentuan</h3><p class="text-sm text-slate-500 mt-1">Kelola informasi petunjuk penggunaan dan aturan gudang.</p></div>
+                  <button onclick="openGuideEditor()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-bold text-sm"><i class="fa-solid fa-plus mr-2"></i>Tambah Petunjuk</button>
+                </div>
+                <div id="guideList" class="grid grid-cols-1 lg:grid-cols-2 gap-4"></div>
+              </div>
+            </div>
+            <!-- Editor Petunjuk -->
+            <div id="guideEditorModal" class="fixed inset-0 z-[95] hidden items-center justify-center p-4">
+              <div class="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onclick="closeGuideEditor()"></div>
+              <div class="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl flex flex-col max-h-[90vh]">
+                <div class="px-5 py-4 border-b flex justify-between items-center"><h3 id="guideEditorTitle" class="font-bold text-lg">Tambah Petunjuk</h3><button onclick="closeGuideEditor()" class="text-slate-500 hover:text-red-500"><i class="fa-solid fa-xmark"></i></button></div>
+                <div class="p-5 overflow-y-auto space-y-4"><input id="guideEditId" type="hidden"><div><label class="block text-sm font-semibold mb-1">Judul</label><input id="guideEditTitle" class="w-full border rounded-lg p-2.5" placeholder="Contoh: Tata cara barang keluar"></div><div><label class="block text-sm font-semibold mb-1">Kategori</label><input id="guideEditCategory" class="w-full border rounded-lg p-2.5" placeholder="Petunjuk / Ketentuan / SOP"></div><div><label class="block text-sm font-semibold mb-1">Isi petunjuk / ketentuan</label><textarea id="guideEditBody" rows="8" class="w-full border rounded-lg p-2.5" placeholder="Tuliskan isi di sini..."></textarea><p class="text-xs text-slate-400 mt-1">Baris baru akan dipertahankan.</p></div></div>
+                <div class="p-4 border-t bg-slate-50 flex justify-end gap-2"><button onclick="closeGuideEditor()" class="px-4 py-2 border rounded-lg">Batal</button><button onclick="saveGuideItem()" class="px-4 py-2 bg-blue-600 text-white rounded-lg font-bold">Simpan</button></div>
               </div>
             </div>
 
@@ -859,6 +882,30 @@
             setTimeout(() => { modal.classList.add('hidden'); }, 200); confirmCallback = null;
         }
 
+
+        // CRUD Petunjuk & Ketentuan: disimpan pada browser perangkat ini (localStorage).
+        const GUIDE_STORAGE_KEY = 'inventoryGuideTerms_v1';
+        function getGuideItems(){ try{return JSON.parse(localStorage.getItem(GUIDE_STORAGE_KEY)||'[]')}catch(e){return []} }
+        function saveGuideItems(items){ localStorage.setItem(GUIDE_STORAGE_KEY,JSON.stringify(items)); }
+        function guideEscape(v){return String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));}
+        function renderGuideItems(){
+          const el=document.getElementById('guideList'); if(!el)return; const items=getGuideItems();
+          if(!items.length){el.innerHTML='<div class="bg-white border rounded-xl p-8 text-center text-slate-400 lg:col-span-2"><i class="fa-solid fa-book-open text-3xl mb-3"></i><p>Belum ada petunjuk atau ketentuan.</p><p class="text-xs mt-1">Klik Tambah Petunjuk untuk membuat konten pertama.</p></div>';return;}
+          el.innerHTML=items.map(item=>`<article class="bg-white rounded-xl border shadow-sm overflow-hidden"><div class="p-5"><div class="flex justify-between items-start gap-3"><div class="min-w-0"><span class="text-xs font-bold bg-blue-50 text-blue-700 px-2 py-1 rounded-full">${guideEscape(item.category||'Umum')}</span><h4 class="font-bold text-lg mt-3 break-words">${guideEscape(item.title)}</h4></div><div class="flex gap-1 shrink-0"><button onclick="editGuideItem('${item.id}')" title="Edit" class="px-3 py-2 rounded bg-blue-50 text-blue-700"><i class="fa-solid fa-pen"></i></button><button onclick="deleteGuideItem('${item.id}')" title="Hapus" class="px-3 py-2 rounded bg-red-50 text-red-600"><i class="fa-solid fa-trash"></i></button></div></div><div class="mt-4 text-sm text-slate-700 whitespace-pre-wrap break-words">${guideEscape(item.body)}</div></div></article>`).join('');
+        }
+        function openGuideEditor(id){
+          const item=id?getGuideItems().find(x=>x.id===id):null; document.getElementById('guideEditId').value=item?.id||''; document.getElementById('guideEditTitle').value=item?.title||''; document.getElementById('guideEditCategory').value=item?.category||''; document.getElementById('guideEditBody').value=item?.body||''; document.getElementById('guideEditorTitle').textContent=item?'Edit Petunjuk':'Tambah Petunjuk';
+          const m=document.getElementById('guideEditorModal');m.classList.remove('hidden');m.classList.add('flex');
+        }
+        function closeGuideEditor(){const m=document.getElementById('guideEditorModal');m.classList.add('hidden');m.classList.remove('flex');}
+        function saveGuideItem(){
+          const title=document.getElementById('guideEditTitle').value.trim(),body=document.getElementById('guideEditBody').value.trim();if(!title||!body){showToast('Judul dan isi wajib diisi.','warn');return;}
+          let items=getGuideItems(),id=document.getElementById('guideEditId').value;const item={id:id||('guide_'+Date.now()),title,category:document.getElementById('guideEditCategory').value.trim()||'Umum',body,updatedAt:new Date().toISOString()};
+          if(id){items=items.map(x=>x.id===id?item:x)}else items.unshift(item);saveGuideItems(items);closeGuideEditor();renderGuideItems();showToast('Petunjuk berhasil disimpan.','success');
+        }
+        function editGuideItem(id){openGuideEditor(id)}
+        function deleteGuideItem(id){if(!confirm('Hapus petunjuk ini?'))return;saveGuideItems(getGuideItems().filter(x=>x.id!==id));renderGuideItems();showToast('Petunjuk dihapus.','success')}
+
         // --- STREAMING_CHUNK:Navigation logic... ---
         function switchView(viewName) {
             currentView = viewName;
@@ -875,9 +922,12 @@
                 cartView.classList.toggle('flex', viewName === 'cart');
             }
             if (viewName === 'cart') renderPartCart();
+            const guideView = document.getElementById('view-guide');
+            if (guideView) { guideView.classList.toggle('hidden', viewName !== 'guide'); guideView.classList.toggle('flex', viewName === 'guide'); }
+            if (viewName === 'guide') renderGuideItems();
             
             document.getElementById('headerActionButtons').style.display = (viewName === 'inventory') ? 'flex' : 'none';
-            document.getElementById('pageTitle').innerText = (viewName === 'dashboard') ? 'Dashboard Analitik' : (viewName === 'cart' ? 'Keranjang Part' : 'Master Data Semua Barang');
+            document.getElementById('pageTitle').innerText = ({dashboard:'Dashboard Analitik', inventory:'Master Data Semua Barang', cart:'Keranjang Part', guide:'Petunjuk & Ketentuan'})[viewName] || 'Sistem Gudang';
 
             document.getElementById('menu-dashboard').className = (viewName === 'dashboard') 
                 ? "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors bg-blue-600/20 text-blue-400 border border-blue-500/20" 
@@ -887,6 +937,11 @@
                 : "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-300 hover:bg-slate-800 hover:text-white transition-colors border border-transparent";
             const menuCart = document.getElementById('menu-cart');
             if (menuCart) menuCart.className = (viewName === 'cart')
+                ? "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors bg-blue-600/20 text-blue-400 border border-blue-500/20"
+                : "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-300 hover:bg-slate-800 hover:text-white transition-colors border border-transparent";
+
+            const menuGuide = document.getElementById('menu-guide');
+            if (menuGuide) menuGuide.className = (viewName === 'guide')
                 ? "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors bg-blue-600/20 text-blue-400 border border-blue-500/20"
                 : "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-300 hover:bg-slate-800 hover:text-white transition-colors border border-transparent";
 
